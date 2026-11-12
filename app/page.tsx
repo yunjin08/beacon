@@ -8,24 +8,21 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
 export default function Home() {
-  const { setUser } = useUserContext();
-  const [hasAccount, setHasAccount] = useState(false);
-  const [hasAccountData, setHasAccountData] = useState(false);
+  const { user } = useUserContext();
   const [isLoading, setIsLoading] = useState(false);
   const router = useRouter();
+  const isSignedIn = Boolean(user.email);
+  const hasGraph = Boolean(user.links?.length);
 
   const handleLoginButtonClick = async () => {
     setIsLoading(true);
-    await handleSignIn(setUser, setHasAccount, setHasAccountData);
+    await handleSignIn();
   };
 
   useEffect(() => {
-    if (hasAccountData) {
-      router.push('/home');
-    } else if (hasAccount) {
-      router.push('/setup');
-    }
-  }, [hasAccount, router, hasAccountData]);
+    if (!isSignedIn) return;
+    router.push(hasGraph ? '/home' : '/setup');
+  }, [isSignedIn, hasGraph, router]);
 
   return (
     <main className="flex items-center justify-center h-full text-white">

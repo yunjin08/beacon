@@ -11,7 +11,7 @@ import {
   useEffect,
 } from 'react';
 import { UserInterface } from '@/interface/authInterface';
-import { handleAuthStateChange } from '@/db/auth';
+import { loadCurrentUser } from '@/db/auth';
 
 interface UserContextInterface {
   user: UserInterface;
@@ -39,7 +39,7 @@ export const UserWrapper = (props: PropsInterface) => {
   );
 
   useEffect(() => {
-    handleAuthStateChange(user, setUser);
+    loadCurrentUser(user, setUser);
   }, []);
 
   return (

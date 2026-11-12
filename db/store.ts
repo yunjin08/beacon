@@ -1,192 +1,115 @@
-import {
-  getFirestore,
-  setDoc,
-  doc,
-  collection,
-  query,
-  getDocs,
-  getDoc,
-  updateDoc,
-  where,
-} from 'firebase/firestore';
-import app from '@/db/firebase';
 import { ProfileInterface, UserInterface } from '@/interface/authInterface';
 import { LinkInterface, NodeInterface } from '@/interface/graphInterface';
 import { Dispatch, SetStateAction } from 'react';
 
-const db = getFirestore(app);
+type SetUser = Dispatch<SetStateAction<UserInterface>>;
 
-export const filterUserID = async (authEmail: string) => {
-  const userQuery = query(
-    collection(db, 'users'),
-    where('email', '==', authEmail)
-  );
-  const userSnapshot = await getDocs(userQuery);
-  let authID = '';
-
-  userSnapshot.forEach((user) => {
-    const userData = user.data();
-    if (userData.email == authEmail) {
-      authID = user.id;
-    }
-  });
-
-  return authID;
-};
-
-export const getSingleUser = async (authEmail: string) => {
-  const userQuery = query(
-    collection(db, 'users'),
-    where('email', '==', authEmail)
-  );
-  const userSnapshot = await getDocs(userQuery);
-  let user = {} as UserInterface;
-  userSnapshot.forEach((u) => {
-    const userData = u.data();
-    if (userData.email == authEmail) {
-      user.name = userData.name;
-      user.email = userData.email;
-      user.links = userData.links;
-    }
-  });
-
-  return user;
-};
-
-export const refreshUserData = async (
-  user: UserInterface,
-  setUser: Dispatch<SetStateAction<UserInterface>>
-) => {
-  const authID = await filterUserID(user.email);
-
-  if (!authID) {
-    return;
+class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string
+  ) {
+    super(message);
   }
+}
 
-  const userRef = doc(db, 'users', authID);
-  const userSnap = await getDoc(userRef);
-  const updatedUserData = userSnap.data();
-  const newUserData = {
-    ...user,
-    profile: updatedUserData?.profile,
-    nodes: updatedUserData?.nodes,
-    links: updatedUserData?.links,
-    nodeNumber: updatedUserData?.nodeNumber,
-  };
-  setUser(newUserData);
-  console.log('LOG: Refresh User Data', newUserData);
+const request = async (path: string, init?: RequestInit) => {
+  const res = await fetch(path, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...init?.headers },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body.error ?? res.statusText);
+  }
+  return (await res.json()) as UserInterface;
 };
 
-export const postInitialUserData = async (user: UserInterface) => {
-  const userQuery = query(collection(db, 'users'));
-  const userSnapshot = await getDocs(userQuery);
-  let userAccountAlreadyExists = 0;
+// Node and link appends run concurrently and can resolve out of order. Every
+// server write bumps `version`, and a higher version always contains all
+// earlier writes, so a stale response must never replace a newer one.
+const applyServerUser = (setUser: SetUser, next: UserInterface) => {
+  setUser((prev) =>
+    prev.email === next.email && (prev.version ?? 0) > (next.version ?? 0)
+      ? prev
+      : next
+  );
+};
 
-  userSnapshot.forEach((u) => {
-    const userData = u.data();
-    if (userData.email == user.email) {
-      userAccountAlreadyExists = 1;
-    }
-  });
-
-  if (userAccountAlreadyExists) {
-    return;
+export const fetchCurrentUser = async (): Promise<UserInterface | null> => {
+  try {
+    return await request('/api/user');
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) return null;
+    throw error;
   }
+};
 
-  await setDoc(doc(collection(db, 'users')), {
-    name: user.name,
-    email: user.email,
-    nodes: user.nodes,
-    links: user.links,
-    nodeNumber: user.nodeNumber,
-  });
+export const refreshUserData = async (_user: UserInterface, setUser: SetUser) => {
+  const user = await fetchCurrentUser();
+  if (user) applyServerUser(setUser, user);
 };
 
 export const postUserInfo = async (
-  user: UserInterface,
+  _user: UserInterface,
   userInfo: ProfileInterface
 ) => {
-  const authID = await filterUserID(user.email);
-  const userRef = doc(db, 'users', authID);
-  await updateDoc(userRef, {
-    profile: userInfo,
+  await request('/api/user/profile', {
+    method: 'PUT',
+    body: JSON.stringify({ profile: userInfo }),
   });
-};
-
-export const updateUserNodes = async (
-  user: UserInterface,
-  setUser: Dispatch<SetStateAction<UserInterface>>,
-  newNodes: NodeInterface[]
-) => {
-  const authID = await filterUserID(user.email);
-  const userRef = doc(db, 'users', authID);
-  const userSnap = await getDoc(userRef);
-  const userNodes = userSnap.data()?.nodes;
-
-  const updatedNodes = [...userNodes, ...newNodes];
-  await updateDoc(userRef, {
-    nodes: updatedNodes,
-    nodeNumber: updatedNodes.length + 1,
-  });
-  await refreshUserData(user, setUser);
 };
 
 export const updateUserProfile = async (
-  user: UserInterface,
-  setUser: Dispatch<SetStateAction<UserInterface>>,
+  _user: UserInterface,
+  setUser: SetUser,
   profile: ProfileInterface
 ) => {
-  const authID = await filterUserID(user.email);
-  const userRef = doc(db, 'users', authID);
-
-  const updatedProfile = { ...profile };
-  await updateDoc(userRef, {
-    profile: updatedProfile,
+  const updated = await request('/api/user/profile', {
+    method: 'PUT',
+    body: JSON.stringify({ profile }),
   });
-  await refreshUserData(user, setUser);
+  applyServerUser(setUser, updated);
+};
+
+export const updateUserNodes = async (
+  _user: UserInterface,
+  setUser: SetUser,
+  newNodes: NodeInterface[]
+) => {
+  const updated = await request('/api/user/nodes', {
+    method: 'POST',
+    body: JSON.stringify({ nodes: newNodes }),
+  });
+  applyServerUser(setUser, updated);
 };
 
 export const updateUserLinks = async (
-  user: UserInterface,
-  setUser: Dispatch<SetStateAction<UserInterface>>,
+  _user: UserInterface,
+  setUser: SetUser,
   newLinks: LinkInterface[]
 ) => {
-  const authID = await filterUserID(user.email);
-  const userRef = doc(db, 'users', authID);
-  const userSnap = await getDoc(userRef);
-  const userLinks = userSnap.data()?.links;
-
-  const cleanedNewLinks = newLinks.map((link: LinkInterface) => {
-    return {
-      ...link,
-      source: link.source.id,
-      target: link.target.id,
-    };
+  const links = newLinks.map((link) => ({
+    source: link.source.id,
+    target: link.target.id,
+  }));
+  const updated = await request('/api/user/links', {
+    method: 'POST',
+    body: JSON.stringify({ links }),
   });
-
-  const updatedLinks = [...userLinks, ...cleanedNewLinks];
-  await updateDoc(userRef, {
-    links: updatedLinks,
-  });
-  await refreshUserData(user, setUser);
+  applyServerUser(setUser, updated);
 };
 
 export const deleteLink = async (
-  user: UserInterface,
-  setUser: Dispatch<SetStateAction<UserInterface>>,
-  link: any
+  _user: UserInterface,
+  setUser: SetUser,
+  link: LinkInterface
 ) => {
-  const authID = await filterUserID(user.email);
-  const userRef = doc(db, 'users', authID);
-  const userSnap = await getDoc(userRef);
-  const userLinks = userSnap.data()?.links;
-  const updatedLinks = userLinks.filter((userLink: LinkInterface) => {
-    return (
-      userLink.source != link.source.id && userLink.target != link.target.id
-    );
+  const updated = await request('/api/user/links', {
+    method: 'DELETE',
+    body: JSON.stringify({
+      link: { source: link.source.id, target: link.target.id },
+    }),
   });
-  await updateDoc(userRef, {
-    links: updatedLinks,
-  });
+  applyServerUser(setUser, updated);
 };
-

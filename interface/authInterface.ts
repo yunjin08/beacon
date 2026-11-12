@@ -18,4 +18,5 @@ export interface UserInterface {
   nodes: NodeInterface[];
   links: LinkInterface[];
   nodeNumber: number;
+  version?: number;
 }
